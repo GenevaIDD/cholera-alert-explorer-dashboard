@@ -1,0 +1,22 @@
+# R session / history
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+
+# build artifacts / packaging
+*.zip
+
+# R package library if ever installed locally
+renv/library/
+.Rproj.user
+
+# logs
+*.log
+
+

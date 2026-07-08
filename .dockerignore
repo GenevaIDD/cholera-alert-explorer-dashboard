@@ -1,0 +1,12 @@
+# keep build/deploy files and dev cruft out of the app image
+.git
+.gitignore
+Dockerfile
+Dockerfile.base
+.dockerignore
+DEPLOY.md
+README.md
+*.zip
+**/.Rhistory
+**/.RData
+**/.Rproj.user
