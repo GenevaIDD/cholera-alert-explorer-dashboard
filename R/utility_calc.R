@@ -153,7 +153,10 @@ select_top_definitions <- function(view1_tbl, pop_keep, n_top = 4, cutoff_val = 
   if (length(std_cols) > 0 && is.finite(cutoff_val)) {
     df <- df %>%
       dplyr::rowwise() %>%
-      dplyr::mutate(min_score = min(dplyr::c_across(dplyr::all_of(std_cols)), na.rm = TRUE)) %>%
+      dplyr::mutate(min_score = {
+        vals <- dplyr::c_across(dplyr::all_of(std_cols))
+        if (all(is.na(vals))) NA_real_ else min(vals, na.rm = TRUE)
+      }) %>%
       dplyr::ungroup() %>%
       dplyr::filter(min_score >= cutoff_val)
   }
@@ -205,8 +208,12 @@ build_top_alerts_table <- function(view1_tbl, pop_keep, n_top = 4, cutoff_val = 
   pop_order_codes <- c("<50k", "50k-500k", ">500k")
   pop_keep <- pop_order_codes[pop_order_codes %in% pop_keep]
 
-  has_missed <- "missed_prop" %in% names(view1_tbl)
-  has_delay  <- "delay_mean"  %in% names(view1_tbl)
+  has_sd_impact <- "sd_impact" %in% names(view1_tbl)
+  has_sd_eff    <- "sd_eff"    %in% names(view1_tbl)
+  has_n_alerts  <- "n_alerts"  %in% names(view1_tbl)
+  has_missed    <- "missed_prop" %in% names(view1_tbl)
+  has_delay     <- "delay_mean"  %in% names(view1_tbl)
+  has_sd_delay  <- "sd_delay"    %in% names(view1_tbl)
 
   ## every row returned is already eligible (passes the -1 cutoff) and
   ## already within the requested top N (or "all" eligible) per group
@@ -228,15 +235,35 @@ build_top_alerts_table <- function(view1_tbl, pop_keep, n_top = 4, cutoff_val = 
       pop_brk,
       `Alert Definition` = .alert_def_html,
       `Alert Type`       = tools::toTitleCase(alert_type),
-      `Impact: cases (SD)` = paste0(round(impact_mean, 1), " (", round(sd_impact, 1), ")"),
-      `Efficiency: cases per 1000 pop (SD)` = paste0(round(eff_mean, 2), " (", round(sd_eff, 2), ")"),
-      `PPV: proportion (N alerts)` = paste0(round(ppv, 2), " (", n_alerts, ")"),
+      `Impact: cases (SD)` = if (has_sd_impact) {
+        paste0(round(impact_mean, 1), " (", round(sd_impact, 1), ")")
+      } else {
+        paste0(round(impact_mean, 1))
+      },
+      `Efficiency: cases per 1000 pop (SD)` = if (has_sd_eff) {
+        paste0(round(eff_mean, 2), " (", round(sd_eff, 2), ")")
+      } else {
+        paste0(round(eff_mean, 2))
+      },
+      `PPV: proportion (N alerts)` = if (has_n_alerts) {
+        paste0(round(ppv, 2), " (", n_alerts, ")")
+      } else {
+        paste0(round(ppv, 2))
+      },
       `Missed: proportion (N outbreaks)` = if (has_missed) {
-        paste0(round(missed_prop, 2), " (", n_outbreaks, ")")
+        if ("n_outbreaks" %in% names(combined)) {
+          paste0(round(missed_prop, 2), " (", n_outbreaks, ")")
+        } else {
+          ifelse(is.na(missed_prop), "n/a", paste0(round(missed_prop, 2)))
+        }
       } else "n/a",
       `Timeliness: weeks from outbreak start (SD)` = if (has_delay) {
-        ifelse(is.na(delay_mean), "n/a",
-               paste0(round(delay_mean, 1), " (", round(sd_delay, 1), ")"))
+        if (has_sd_delay) {
+          ifelse(is.na(delay_mean), "n/a",
+                 paste0(round(delay_mean, 1), " (", round(sd_delay, 1), ")"))
+        } else {
+          ifelse(is.na(delay_mean), "n/a", paste0(round(delay_mean, 1)))
+        }
       } else "n/a",
       `Utility Score` = round(util_score, 2)
     )
@@ -274,7 +301,7 @@ alert_type_palette <- function() {
 }
 
 
-make_dimensions_figure <- function(selected_rows, full_tbl, dist_tbl) {
+make_dimensions_figure <- function(selected_rows, full_tbl, dist_tbl, country = NULL) {
   
   if (is.null(selected_rows) || nrow(selected_rows) == 0) return(NULL)
   if (is.null(dist_tbl)) return(NULL)
@@ -319,7 +346,25 @@ make_dimensions_figure <- function(selected_rows, full_tbl, dist_tbl) {
       alert_lab = as.character(alert_lab)
     )
 
-  d <- dist_tbl %>%
+  ## Use country-specific distributions when available for this country and
+  ## these selected alerts; otherwise fall back to the pooled (all-country)
+  ## distributions and note it in the caption. Falling back is decided once
+  ## for the whole figure (not per alert/dimension) so all five panels stay
+  ## on a consistent basis.
+  boxplots_are_pooled <- TRUE
+  dist_source <- dist_tbl
+  if (!is.null(country) && "country" %in% names(dist_tbl)) {
+    dist_country <- dplyr::filter(dist_tbl, country == !!country)
+    has_country_data <- dist_country %>%
+      dplyr::semi_join(sel_keys, by = c("pop_brk", "alert_lab")) %>%
+      nrow() > 0
+    if (has_country_data) {
+      dist_source <- dist_country
+      boxplots_are_pooled <- FALSE
+    }
+  }
+
+  d <- dist_source %>%
     dplyr::semi_join(sel_keys, by = c("pop_brk", "alert_lab")) %>%
     dplyr::mutate(
       pop_brk    = factor(pop_brk, levels = pops),
@@ -482,7 +527,17 @@ make_dimensions_figure <- function(selected_rows, full_tbl, dist_tbl) {
         "Boxplots: distribution across alert evaluations (Impact, Efficiency)",
         "or linked outbreaks (Timeliness); black dot = mean.",
         "Bars: PPV and Missed (proportion). Dashed line: median across",
-        "definitions. x-axes clipped for readability."
+        "definitions. x-axes clipped for readability.",
+        if (boxplots_are_pooled) {
+          paste(
+            "Ranking and dashed reference lines reflect the selected",
+            "country; boxplot distributions are pooled across all",
+            "countries (no country-specific evaluations available for",
+            "these alert definitions)."
+          )
+        } else {
+          ""
+        }
       ),
       theme = ggplot2::theme(
         legend.position = "bottom",

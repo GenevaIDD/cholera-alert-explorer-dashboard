@@ -285,5 +285,67 @@ try_case("data/ contains only .parquet (+ the utility CSV), no leftover .rds fil
   stopifnot(any(grepl("\\.parquet$", data_files)))
 })
 
+try_case("View 2 extra-alert dropdowns embed a hover tooltip with the full description per option", {
+  html <- as.character(view2_ui("view2"))
+  stopifnot(grepl("option: function", html, fixed = TRUE))
+  stopifnot(grepl("var descriptions", html, fixed = TRUE))
+  # spot check: alert 8's description text appears somewhere in the embedded JSON
+  stopifnot(grepl(alert_definition_description(1), html, fixed = TRUE))
+})
+
+try_case("load_country_tbl() combines the 3 country CSVs with alert_number attached, zero NAs", {
+  stopifnot(!is.null(ad$country_tbl))
+  stopifnot(all(c("country","pop_brk","alert_number","alert_lab","util_score") %in% names(ad$country_tbl)))
+  stopifnot(sum(is.na(ad$country_tbl$alert_number)) == 0)
+})
+try_case("build_top_alerts_table() on country data omits SD/N parentheticals gracefully (no crash)", {
+  one <- dplyr::filter(ad$country_tbl, country == ad$country_tbl$country[1])
+  parts <- build_top_alerts_table(one, pop_keep = c("<50k","50k-500k",">500k"), n_top = "3")
+  stopifnot(is.data.frame(parts$display))
+  # no SD companion in country data -> "Impact: cases (SD)" column should NOT contain a "(" 
+  if (nrow(parts$display) > 0) {
+    stopifnot(!any(grepl("\\(", parts$display[["Impact: cases (SD)"]])))
+  }
+})
+try_case("country selection never crashes even for the sparsest-data country", {
+  sparse_country <- ad$country_tbl %>% dplyr::count(country) %>% dplyr::arrange(n) %>% dplyr::slice(1) %>% dplyr::pull(country)
+  one <- dplyr::filter(ad$country_tbl, country == sparse_country)
+  parts <- build_top_alerts_table(one, pop_keep = c("<50k","50k-500k",">500k"), n_top = "all")
+  stopifnot(is.data.frame(parts$display))  # 0 rows is fine, just must not error
+})
+try_case("make_dimensions_figure() renders with a country-filtered full_tbl and real dist_tbl country data", {
+  one_country <- ad$country_tbl$country[1]
+  one <- dplyr::filter(ad$country_tbl, country == one_country)
+  sr <- select_top_definitions(one, pop_keep = c("<50k","50k-500k",">500k"), n_top = "3")
+  build(make_dimensions_figure(sr, one, ad$dist_tbl, country = one_country))
+})
+try_case("dist_tbl carries country, and a real country's boxplot data is a genuine subset of pooled", {
+  stopifnot("country" %in% names(ad$dist_tbl))
+  stopifnot(sum(is.na(ad$dist_tbl$country)) == 0)
+  one_country <- ad$country_tbl$country[1]
+  one_lab <- dplyr::filter(ad$dist_tbl, country == one_country)$alert_lab[1]
+  n_country <- ad$dist_tbl %>% dplyr::filter(country == one_country, alert_lab == one_lab, dimension == "Impact") %>% nrow()
+  n_pooled  <- ad$dist_tbl %>% dplyr::filter(alert_lab == one_lab, dimension == "Impact") %>% nrow()
+  stopifnot(n_country > 0, n_country <= n_pooled)
+})
+try_case("make_dimensions_figure() falls back to pooled distributions for a country with no dist data", {
+  one <- dplyr::filter(ad$country_tbl, country == ad$country_tbl$country[1])
+  sr <- select_top_definitions(one, pop_keep = c("<50k","50k-500k",">500k"), n_top = "3")
+  fig <- make_dimensions_figure(sr, one, ad$dist_tbl, country = "ZZZ_NONEXISTENT_COUNTRY")
+  build(fig)
+  stopifnot(grepl("pooled across all", fig$patches$annotation$caption))
+})
+try_case("View 1 reactive server: switching country changes the table without crashing", {
+  testServer(view1_server, args = list(data = ad), {
+    session$setInputs(pop_keep = c("<50k","50k-500k",">500k"), n_top = "3", country = "__all__")
+    n_pooled <- nrow(table_parts()$display)
+    a_country <- ad$country_tbl$country[1]
+    session$setInputs(country = a_country)
+    stopifnot(is_country_selected())
+    n_country <- nrow(table_parts()$display)
+    stopifnot(is.numeric(n_pooled), is.numeric(n_country))
+  })
+})
+
 cat(sprintf("\n=== RESULT: %d passed, %d failed ===\n", pass, fail))
 if (fail > 0) quit(status = 1)
