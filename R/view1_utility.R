@@ -131,17 +131,28 @@ view1_ui <- function(id) {
 view1_server <- function(id, data) {
   shiny::moduleServer(id, function(input, output, session) {
 
-    ## populate the country dropdown once, from whatever countries are
-    ## actually present in the country table; degrades to "pooled only" if
-    ## data$country_tbl is unavailable (e.g. the CSVs are missing)
-    shiny::observe({
+    ## populate the country dropdown once, from countries that have at
+    ## least one eligible alert definition in at least one population group
+    ## (the same eligibility rule the table itself applies) - a country with
+    ## no usable data anywhere is not offered as an option at all. Degrades
+    ## to "pooled only" if data$country_tbl is unavailable (e.g. the CSVs
+    ## are missing). Sorted by full country name, not ISO3 code.
+    country_completeness <- shiny::reactive({
       if (is.null(data$country_tbl)) return(NULL)
-      country_choices <- sort(unique(data$country_tbl$country))
+      compute_country_completeness(data$country_tbl)
+    })
+
+    shiny::observe({
+      comp <- country_completeness()
+      if (is.null(comp)) return(NULL)
+      country_codes <- unique(comp$country)
+      country_labels <- country_display_name(country_codes)
+      ord <- order(country_labels)
       shiny::updateSelectInput(
         session, "country",
         choices = c(
           "All countries (pooled)" = POOLED_SENTINEL,
-          stats::setNames(country_choices, country_choices)
+          stats::setNames(country_codes[ord], country_labels[ord])
         )
       )
     })
@@ -176,10 +187,29 @@ view1_server <- function(id, data) {
 
     output$country_note <- shiny::renderUI({
       shiny::req(is_country_selected())
-      shiny::helpText(
-        "Showing estimates for ", shiny::tags$b(input$country), " only. ",
-        "The table, ranking and dimension figure below are all specific to ",
-        input$country, "."
+      country_name <- country_display_name(input$country)
+
+      comp <- country_completeness()
+      covered <- if (is.null(comp)) character(0) else comp$pop_brk[comp$country == input$country]
+      missing_groups <- setdiff(c("<50k", "50k-500k", ">500k"), covered)
+
+      shiny::tagList(
+        shiny::helpText(
+          "Showing estimates for ", shiny::tags$b(country_name), " only. ",
+          "The table, ranking and dimension figure below are all specific to ",
+          country_name, "."
+        ),
+        if (length(missing_groups) > 0) {
+          shiny::helpText(
+            shiny::tags$b("Data sparsity: "),
+            country_name, " has no eligible alert definitions in the ",
+            paste(vapply(missing_groups, pop_group_long_label, character(1)), collapse = "; "),
+            if (length(missing_groups) > 1) " population groups." else " population group.",
+            " Only ", 3 - length(missing_groups), " of 3 population groups are shown."
+          )
+        } else {
+          NULL
+        }
       )
     })
 
@@ -219,7 +249,7 @@ view1_server <- function(id, data) {
         TRUE ~ plain_names
       )
 
-      caption_scope <- if (is_country_selected()) paste0(" \u2014 ", input$country) else ""
+      caption_scope <- if (is_country_selected()) paste0(" \u2014 ", country_display_name(input$country)) else ""
 
       kbl <- tab_body %>%
         kableExtra::kbl(
@@ -241,12 +271,22 @@ view1_server <- function(id, data) {
           full_width = TRUE, position = "center"
         )
 
+      n_locations_for <- function(pg) {
+        lp <- data$location_pop_brk
+        if (is.null(lp)) return(NA_integer_)
+        if (is_country_selected()) lp <- dplyr::filter(lp, country == input$country)
+        sum(lp$pop_brk == pg)
+      }
+
       start <- 1
       for (i in seq_along(parts$group_counts)) {
         n_i <- parts$group_counts[i]
         kbl <- kableExtra::group_rows(
           kbl,
-          group_label = pop_group_long_label(parts$pop_keep[i]),
+          group_label = pop_group_long_label(
+            parts$pop_keep[i],
+            n_locations = n_locations_for(parts$pop_keep[i])
+          ),
           start_row = start,
           end_row = start + n_i - 1
         )

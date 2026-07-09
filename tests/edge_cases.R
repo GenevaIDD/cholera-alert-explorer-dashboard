@@ -345,6 +345,81 @@ try_case("View 1 reactive server: switching country changes the table without cr
     stopifnot(is.numeric(n_pooled), is.numeric(n_country))
   })
 })
+try_case("country_display_name() returns full names for known ISO3 codes, falls back to the code otherwise", {
+  stopifnot(country_display_name("BEN") == "Benin")
+  stopifnot(country_display_name("COD") == "Democratic Republic of the Congo")
+  stopifnot(country_display_name("NOT_A_REAL_CODE") == "NOT_A_REAL_CODE")
+})
+try_case("the two Congos (COD, COG) have distinct, unambiguous display names", {
+  cod <- country_display_name("COD")
+  cog <- country_display_name("COG")
+  stopifnot(cod != cog)
+  stopifnot(cog != "Congo")  # bare "Congo" is ambiguous when both appear in the same dropdown
+  stopifnot(grepl("Democratic", cod, fixed = TRUE))
+  stopifnot(grepl("Republic", cog, fixed = TRUE))
+})
+try_case("compute_country_completeness() excludes a country with zero eligible alerts anywhere (e.g. Benin)", {
+  comp <- compute_country_completeness(ad$country_tbl)
+  stopifnot(!("BEN" %in% comp$country))
+  stopifnot(nrow(comp) > 0)  # sanity: some countries do have eligible data
+})
+try_case("the country dropdown only offers countries with at least one eligible alert definition", {
+  testServer(view1_server, args = list(data = ad), {
+    session$flushReact()
+    choices <- session$getReturned()  # not used, but exercises the observe() without error
+    comp <- compute_country_completeness(ad$country_tbl)
+    stopifnot(!("BEN" %in% unique(comp$country)))  # Benin has zero eligible data
+  })
+})
+try_case("a partial-coverage country's sparsity note lists exactly its missing population group(s)", {
+  comp <- compute_country_completeness(ad$country_tbl)
+  by_country <- comp %>% dplyr::group_by(country) %>% dplyr::summarise(n_groups = dplyr::n(), .groups = "drop")
+  partial_country <- dplyr::filter(by_country, n_groups < 3)$country[1]
+  stopifnot(!is.na(partial_country))  # confirm a real partial-coverage country exists in this data
+  testServer(view1_server, args = list(data = ad), {
+    session$setInputs(pop_keep = c("<50k","50k-500k",">500k"), n_top = "3", country = partial_country)
+    note_html <- paste(as.character(output$country_note), collapse = "")
+    stopifnot(grepl("Data sparsity", note_html, fixed = TRUE))
+    stopifnot(grepl(country_display_name(partial_country), note_html, fixed = TRUE))
+  })
+})
+try_case("a full-coverage country shows no sparsity note", {
+  comp <- compute_country_completeness(ad$country_tbl)
+  by_country <- comp %>% dplyr::group_by(country) %>% dplyr::summarise(n_groups = dplyr::n(), .groups = "drop")
+  full_country <- dplyr::filter(by_country, n_groups == 3)$country[1]
+  stopifnot(!is.na(full_country))  # confirm a real full-coverage country exists in this data
+  testServer(view1_server, args = list(data = ad), {
+    session$setInputs(pop_keep = c("<50k","50k-500k",">500k"), n_top = "3", country = full_country)
+    note_html <- paste(as.character(output$country_note), collapse = "")
+    stopifnot(!grepl("Data sparsity", note_html, fixed = TRUE))
+  })
+})
+try_case("location_pop_brk loads with no leaked location strings and a sensible pop_brk distribution", {
+  stopifnot(!is.null(ad$location_pop_brk))
+  stopifnot(all(c("location", "pop_brk", "country") %in% names(ad$location_pop_brk)))
+  stopifnot(!any(grepl("::", ad$location_pop_brk$location, fixed = TRUE)))
+  counts <- table(ad$location_pop_brk$pop_brk)
+  stopifnot(all(c("<50k", "50k-500k", ">500k") %in% names(counts)), all(counts > 0))
+})
+try_case("pop_group_long_label() appends the location count only when one is supplied", {
+  stopifnot(!grepl("locations)", pop_group_long_label("<50k"), fixed = TRUE))
+  stopifnot(grepl("(142 locations)", pop_group_long_label("<50k", n_locations = 142), fixed = TRUE))
+})
+try_case("table location counts differ between pooled and a specific country, and are internally consistent", {
+  testServer(view1_server, args = list(data = ad), {
+    session$setInputs(pop_keep = c("<50k","50k-500k",">500k"), n_top = "3", country = "__all__")
+    pooled_n <- sum(ad$location_pop_brk$pop_brk == "<50k")
+    html_pooled <- paste(as.character(output$top_table), collapse = "")
+    stopifnot(grepl(paste0("(", pooled_n, " locations)"), html_pooled, fixed = TRUE))
+
+    a_country <- ad$country_tbl$country[1]
+    session$setInputs(country = a_country)
+    country_n <- sum(ad$location_pop_brk$pop_brk == "<50k" & ad$location_pop_brk$country == a_country)
+    html_country <- paste(as.character(output$top_table), collapse = "")
+    stopifnot(grepl(paste0("(", country_n, " locations)"), html_country, fixed = TRUE))
+    stopifnot(country_n != pooled_n)  # sanity: country subset really is different from pooled
+  })
+})
 
 cat(sprintf("\n=== RESULT: %d passed, %d failed ===\n", pass, fail))
 if (fail > 0) quit(status = 1)

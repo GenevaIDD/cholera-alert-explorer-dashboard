@@ -106,6 +106,7 @@ load_app_data <- function(data_dir = "data") {
     view1_tbl = load_view1_table(data_dir),
     country_tbl = load_country_tbl(data_dir),
     dist_tbl = load_dist_table(data_dir),
+    location_pop_brk = load_location_pop_brk(data_dir),
     time_series = time_series,
     alert_groups = alert_groups
   )
@@ -154,4 +155,18 @@ load_dist_table <- function(data_dir) {
 
   if (length(parts) == 0) return(NULL)
   dplyr::bind_rows(parts)
+}
+
+#' Load the location -> population-group (and country) lookup used to show
+#' a location count in each population-group table header
+#' (data/location_pop_brk.parquet: one row per anonymised location, with its
+#' most-recent population bracket and country). Returns NULL if absent, so
+#' the location count simply doesn't appear rather than erroring.
+load_location_pop_brk <- function(data_dir) {
+  path <- file.path(data_dir, "location_pop_brk.parquet")
+  if (!file.exists(path)) return(NULL)
+  tbl <- as.data.frame(arrow::read_parquet(path))
+  tbl$pop_brk <- recode_pop_brk(tbl$pop_brk)
+  tbl$country <- toupper(trimws(as.character(tbl$country)))
+  tbl
 }
