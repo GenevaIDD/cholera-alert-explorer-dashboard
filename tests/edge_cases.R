@@ -328,12 +328,11 @@ try_case("dist_tbl carries country, and a real country's boxplot data is a genui
   n_pooled  <- ad$dist_tbl %>% dplyr::filter(alert_lab == one_lab, dimension == "Impact") %>% nrow()
   stopifnot(n_country > 0, n_country <= n_pooled)
 })
-try_case("make_dimensions_figure() falls back to pooled distributions for a country with no dist data", {
+try_case("make_dimensions_figure() returns NULL (not a crash) for a country absent from dist_tbl", {
   one <- dplyr::filter(ad$country_tbl, country == ad$country_tbl$country[1])
   sr <- select_top_definitions(one, pop_keep = c("<50k","50k-500k",">500k"), n_top = "3")
   fig <- make_dimensions_figure(sr, one, ad$dist_tbl, country = "ZZZ_NONEXISTENT_COUNTRY")
-  build(fig)
-  stopifnot(grepl("pooled across all", fig$patches$annotation$caption))
+  stopifnot(is.null(fig))
 })
 try_case("View 1 reactive server: switching country changes the table without crashing", {
   testServer(view1_server, args = list(data = ad), {

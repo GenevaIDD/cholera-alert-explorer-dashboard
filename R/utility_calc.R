@@ -346,22 +346,12 @@ make_dimensions_figure <- function(selected_rows, full_tbl, dist_tbl, country = 
       alert_lab = as.character(alert_lab)
     )
 
-  ## Use country-specific distributions when available for this country and
-  ## these selected alerts; otherwise fall back to the pooled (all-country)
-  ## distributions and note it in the caption. Falling back is decided once
-  ## for the whole figure (not per alert/dimension) so all five panels stay
-  ## on a consistent basis.
-  boxplots_are_pooled <- TRUE
+  ## Filter to the selected country's distributions when a country is given
+  ## and dist_tbl carries one; otherwise use the pooled (all-country)
+  ## distributions.
   dist_source <- dist_tbl
   if (!is.null(country) && "country" %in% names(dist_tbl)) {
-    dist_country <- dplyr::filter(dist_tbl, country == !!country)
-    has_country_data <- dist_country %>%
-      dplyr::semi_join(sel_keys, by = c("pop_brk", "alert_lab")) %>%
-      nrow() > 0
-    if (has_country_data) {
-      dist_source <- dist_country
-      boxplots_are_pooled <- FALSE
-    }
+    dist_source <- dplyr::filter(dist_tbl, country == !!country)
   }
 
   d <- dist_source %>%
@@ -371,6 +361,12 @@ make_dimensions_figure <- function(selected_rows, full_tbl, dist_tbl, country = 
       row_key    = factor(row_key_of(pop_brk, alert_lab), levels = row_key_levels),
       alert_type = as.character(alert_type)
     )
+
+  ## ggplot2's discrete scale rendering (scale_y_discrete with a full
+  ## label lookup) breaks internally when a boxplot layer has zero rows for
+  ## every dimension (e.g. a country with no matching distribution data at
+  ## all) - bail out cleanly rather than attempt to render broken panels.
+  if (nrow(d) == 0) return(NULL)
 
   bars <- selected_rows %>%
     dplyr::transmute(
@@ -527,17 +523,7 @@ make_dimensions_figure <- function(selected_rows, full_tbl, dist_tbl, country = 
         "Boxplots: distribution across alert evaluations (Impact, Efficiency)",
         "or linked outbreaks (Timeliness); black dot = mean.",
         "Bars: PPV and Missed (proportion). Dashed line: median across",
-        "definitions. x-axes clipped for readability.",
-        if (boxplots_are_pooled) {
-          paste(
-            "Ranking and dashed reference lines reflect the selected",
-            "country; boxplot distributions are pooled across all",
-            "countries (no country-specific evaluations available for",
-            "these alert definitions)."
-          )
-        } else {
-          ""
-        }
+        "definitions. x-axes clipped for readability."
       ),
       theme = ggplot2::theme(
         legend.position = "bottom",

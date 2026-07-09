@@ -1,24 +1,21 @@
 ## ---------------------------------------------------------------------------
 ## view1_utility.R
 ## "Top alerts by utility score": loads the precomputed per-definition utility
-## table (data/complete_utility_data_mean_sd.csv) and shows the top-N alert
-## definitions per population group as (a) a grouped, highlighted table and
-## (b) a Figure-2-style dimension panel restricted to the selected alerts. No
-## utility calculations run in the app - it only filters, ranks and formats.
+## table and shows the top-N alert definitions per population group as (a) a
+## grouped table and (b) a Figure-2-style dimension panel restricted to the
+## selected alerts. No utility calculations run in the app - it only filters,
+## ranks and formats.
 ##
-## A country selector lets the user switch from the pooled (all-country)
-## table to country-specific estimates (data/country_utility_*.csv, one row
-## per country x population group x alert definition). The country tables
-## carry every dimension needed for ranking and eligibility (impact_mean,
-## eff_mean, ppv, missed_prop, delay_mean, std_* dims, util_score) but not
-## the pooled table's SD/N companion columns (sd_impact, sd_eff, sd_delay,
-## n_alerts, n_outbreaks) - the table formatter shows those in parentheses
-## only when present, and just the mean otherwise. The boxplot figure's
-## underlying distributions (compare_significant_*.parquet) are not
-## available per-country, so the boxplots stay pooled across all countries
-## even when a specific country is selected; the ranking and the dashed
-## median reference lines do become country-specific, and the figure's
-## caption notes this whenever it applies.
+## A country selector switches between the pooled (all-country) table
+## (data/complete_utility_data_mean_sd.csv) and country-specific estimates
+## (data/country_utility_*.csv). Selecting a country also filters the
+## dimension figure's boxplots to that country's own distributions
+## (data/compare_significant_*.parquet), so the table, ranking and figure are
+## all consistently country-specific together.
+##
+## The country tables don't carry the pooled table's SD/N companion columns
+## (sd_impact, sd_eff, sd_delay, n_alerts, n_outbreaks) - the table formatter
+## shows those in parentheses only when present, and just the mean otherwise.
 ## ---------------------------------------------------------------------------
 
 ## Single source of truth for the five utility-dimension descriptions, used
@@ -181,10 +178,8 @@ view1_server <- function(id, data) {
       shiny::req(is_country_selected())
       shiny::helpText(
         "Showing estimates for ", shiny::tags$b(input$country), " only. ",
-        "See the note under the figure below for whether its boxplots are ",
-        "specific to ", input$country, " or pooled across all countries ",
-        "(this depends on how much country-specific data exists for the ",
-        "alert definitions currently shown)."
+        "The table, ranking and dimension figure below are all specific to ",
+        input$country, "."
       )
     })
 
@@ -281,10 +276,15 @@ view1_server <- function(id, data) {
         paste0("Distribution files not found. Add the ",
                "compare_significant_*_testmeans_epidemic.parquet exports to data/.")
       ))
-      make_dimensions_figure(
+      fig <- make_dimensions_figure(
         sr, active_tbl(), data$dist_tbl,
         country = if (is_country_selected()) input$country else NULL
       )
+      shiny::validate(shiny::need(
+        !is.null(fig),
+        "No distribution data available for this selection."
+      ))
+      fig
     })
   })
 }
