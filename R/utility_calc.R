@@ -110,13 +110,73 @@ alert_definition_description <- function(alert_number) {
 }
 
 #' Descriptive population-group labels (matching the manuscript table).
-pop_group_long_label <- function(pop_brk) {
-  dplyr::case_when(
+#' ISO3 -> full country name, for the countries present in this app's data.
+#' Verified against the ISO 3166-1 alpha-3 standard. Not a general-purpose
+#' lookup - only covers the 33 countries in the current dataset; add more
+#' entries here if new countries are added upstream.
+COUNTRY_NAMES <- c(
+  AGO = "Angola", BDI = "Burundi", BEN = "Benin", BFA = "Burkina Faso",
+  CAF = "Central African Republic", CIV = "C\u00f4te d'Ivoire", CMR = "Cameroon",
+  COD = "Democratic Republic of the Congo", COG = "Republic of the Congo", ETH = "Ethiopia",
+  GHA = "Ghana", GIN = "Guinea", GNB = "Guinea-Bissau", KEN = "Kenya",
+  LBR = "Liberia", MLI = "Mali", MOZ = "Mozambique", MRT = "Mauritania",
+  MWI = "Malawi", NAM = "Namibia", NER = "Niger", NGA = "Nigeria",
+  RWA = "Rwanda", SDN = "Sudan", SLE = "Sierra Leone", SOM = "Somalia",
+  SSD = "South Sudan", TCD = "Chad", TGO = "Togo", TZA = "Tanzania",
+  UGA = "Uganda", ZMB = "Zambia", ZWE = "Zimbabwe"
+)
+
+#' Full country name for an ISO3 code, falling back to the code itself if
+#' it isn't in COUNTRY_NAMES (e.g. a new country added upstream before the
+#' lookup above is updated) rather than showing nothing.
+country_display_name <- function(iso3) {
+  nm <- unname(COUNTRY_NAMES[iso3])
+  ifelse(is.na(nm), iso3, nm)
+}
+
+#' For every (country, population group) in the country table, count how
+#' many alert definitions are eligible (pass the -1 min-dimension cutoff and
+#' have a non-missing util_score) - the same eligibility rule
+#' select_top_definitions() applies. Used to (a) decide which countries have
+#' any usable data at all (for the dropdown) and (b) detect which population
+#' groups a given country lacks eligible data for (for the sparsity note).
+#'
+#' @return a data frame with columns country, pop_brk, n_eligible - one row
+#'   per (country, pop_brk) that has at least one eligible alert definition.
+#'   A country/pop_brk combination with zero eligible alerts simply does not
+#'   appear as a row (rather than appearing with n_eligible = 0).
+compute_country_completeness <- function(country_tbl, cutoff_val = -1) {
+  std_cols <- c("std_impact", "std_eff", "std_ppv", "std_missed", "std_delay")
+  country_tbl %>%
+    dplyr::rowwise() %>%
+    dplyr::mutate(
+      min_score = {
+        vals <- dplyr::c_across(dplyr::all_of(std_cols))
+        if (all(is.na(vals))) NA_real_ else min(vals, na.rm = TRUE)
+      }
+    ) %>%
+    dplyr::ungroup() %>%
+    dplyr::filter(!is.na(util_score), min_score >= cutoff_val) %>%
+    dplyr::count(country, pop_brk, name = "n_eligible")
+}
+
+#' Population-group section header for the table, optionally with a location
+#' count appended (e.g. "... (142 locations)"). n_locations is NA by default
+#' because no currently-loaded data source carries a per-(country,
+#' population group) count of unique administrative locations - the
+#' complete_utility_data_mean_sd.csv / country_utility_*.csv summary tables
+#' only carry alert-level counts (n_alerts, n_outbreaks), which are not the
+#' same thing. Pass a real count in once an upstream export provides one
+#' (e.g. a `n_locations` column on those CSVs) and this will start showing
+#' it automatically.
+pop_group_long_label <- function(pop_brk, n_locations = NA_integer_) {
+  base <- dplyr::case_when(
     pop_brk == "<50k"     ~ "Administrative units with <50,000 people",
     pop_brk == "50k-500k" ~ "Administrative units with 50,000 to 500,000 people",
     pop_brk == ">500k"    ~ "Administrative units with \u2265500,000 people",
     TRUE ~ as.character(pop_brk)
   )
+  ifelse(is.na(n_locations), base, paste0(base, " (", n_locations, " locations)"))
 }
 
 #' Look up alert_number for rows that only carry alert_lab (e.g. the CSV),
@@ -153,7 +213,10 @@ select_top_definitions <- function(view1_tbl, pop_keep, n_top = 4, cutoff_val = 
   if (length(std_cols) > 0 && is.finite(cutoff_val)) {
     df <- df %>%
       dplyr::rowwise() %>%
-      dplyr::mutate(min_score = min(dplyr::c_across(dplyr::all_of(std_cols)), na.rm = TRUE)) %>%
+      dplyr::mutate(min_score = {
+        vals <- dplyr::c_across(dplyr::all_of(std_cols))
+        if (all(is.na(vals))) NA_real_ else min(vals, na.rm = TRUE)
+      }) %>%
       dplyr::ungroup() %>%
       dplyr::filter(min_score >= cutoff_val)
   }
@@ -205,8 +268,12 @@ build_top_alerts_table <- function(view1_tbl, pop_keep, n_top = 4, cutoff_val = 
   pop_order_codes <- c("<50k", "50k-500k", ">500k")
   pop_keep <- pop_order_codes[pop_order_codes %in% pop_keep]
 
-  has_missed <- "missed_prop" %in% names(view1_tbl)
-  has_delay  <- "delay_mean"  %in% names(view1_tbl)
+  has_sd_impact <- "sd_impact" %in% names(view1_tbl)
+  has_sd_eff    <- "sd_eff"    %in% names(view1_tbl)
+  has_n_alerts  <- "n_alerts"  %in% names(view1_tbl)
+  has_missed    <- "missed_prop" %in% names(view1_tbl)
+  has_delay     <- "delay_mean"  %in% names(view1_tbl)
+  has_sd_delay  <- "sd_delay"    %in% names(view1_tbl)
 
   ## every row returned is already eligible (passes the -1 cutoff) and
   ## already within the requested top N (or "all" eligible) per group
@@ -228,15 +295,35 @@ build_top_alerts_table <- function(view1_tbl, pop_keep, n_top = 4, cutoff_val = 
       pop_brk,
       `Alert Definition` = .alert_def_html,
       `Alert Type`       = tools::toTitleCase(alert_type),
-      `Impact: cases (SD)` = paste0(round(impact_mean, 1), " (", round(sd_impact, 1), ")"),
-      `Efficiency: cases per 1000 pop (SD)` = paste0(round(eff_mean, 2), " (", round(sd_eff, 2), ")"),
-      `PPV: proportion (N alerts)` = paste0(round(ppv, 2), " (", n_alerts, ")"),
+      `Impact: cases (SD)` = if (has_sd_impact) {
+        paste0(round(impact_mean, 1), " (", round(sd_impact, 1), ")")
+      } else {
+        paste0(round(impact_mean, 1))
+      },
+      `Efficiency: cases per 1000 pop (SD)` = if (has_sd_eff) {
+        paste0(round(eff_mean, 2), " (", round(sd_eff, 2), ")")
+      } else {
+        paste0(round(eff_mean, 2))
+      },
+      `PPV: proportion (N alerts)` = if (has_n_alerts) {
+        paste0(round(ppv, 2), " (", n_alerts, ")")
+      } else {
+        paste0(round(ppv, 2))
+      },
       `Missed: proportion (N outbreaks)` = if (has_missed) {
-        paste0(round(missed_prop, 2), " (", n_outbreaks, ")")
+        if ("n_outbreaks" %in% names(combined)) {
+          paste0(round(missed_prop, 2), " (", n_outbreaks, ")")
+        } else {
+          ifelse(is.na(missed_prop), "n/a", paste0(round(missed_prop, 2)))
+        }
       } else "n/a",
       `Timeliness: weeks from outbreak start (SD)` = if (has_delay) {
-        ifelse(is.na(delay_mean), "n/a",
-               paste0(round(delay_mean, 1), " (", round(sd_delay, 1), ")"))
+        if (has_sd_delay) {
+          ifelse(is.na(delay_mean), "n/a",
+                 paste0(round(delay_mean, 1), " (", round(sd_delay, 1), ")"))
+        } else {
+          ifelse(is.na(delay_mean), "n/a", paste0(round(delay_mean, 1)))
+        }
       } else "n/a",
       `Utility Score` = round(util_score, 2)
     )
@@ -274,7 +361,7 @@ alert_type_palette <- function() {
 }
 
 
-make_dimensions_figure <- function(selected_rows, full_tbl, dist_tbl) {
+make_dimensions_figure <- function(selected_rows, full_tbl, dist_tbl, country = NULL) {
   
   if (is.null(selected_rows) || nrow(selected_rows) == 0) return(NULL)
   if (is.null(dist_tbl)) return(NULL)
@@ -319,13 +406,27 @@ make_dimensions_figure <- function(selected_rows, full_tbl, dist_tbl) {
       alert_lab = as.character(alert_lab)
     )
 
-  d <- dist_tbl %>%
+  ## Filter to the selected country's distributions when a country is given
+  ## and dist_tbl carries one; otherwise use the pooled (all-country)
+  ## distributions.
+  dist_source <- dist_tbl
+  if (!is.null(country) && "country" %in% names(dist_tbl)) {
+    dist_source <- dplyr::filter(dist_tbl, country == !!country)
+  }
+
+  d <- dist_source %>%
     dplyr::semi_join(sel_keys, by = c("pop_brk", "alert_lab")) %>%
     dplyr::mutate(
       pop_brk    = factor(pop_brk, levels = pops),
       row_key    = factor(row_key_of(pop_brk, alert_lab), levels = row_key_levels),
       alert_type = as.character(alert_type)
     )
+
+  ## ggplot2's discrete scale rendering (scale_y_discrete with a full
+  ## label lookup) breaks internally when a boxplot layer has zero rows for
+  ## every dimension (e.g. a country with no matching distribution data at
+  ## all) - bail out cleanly rather than attempt to render broken panels.
+  if (nrow(d) == 0) return(NULL)
 
   bars <- selected_rows %>%
     dplyr::transmute(

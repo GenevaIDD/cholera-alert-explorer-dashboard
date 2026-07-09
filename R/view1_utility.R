@@ -1,11 +1,21 @@
 ## ---------------------------------------------------------------------------
 ## view1_utility.R
 ## "Top alerts by utility score": loads the precomputed per-definition utility
-## table (data/complete_utility_data_mean_sd.csv) and shows the top-N alert
-## definitions per population group as (a) a grouped, highlighted table and
-## (b) a Figure-2-style dimension panel restricted to the selected alerts. No
-## utility calculations run in the app - it only filters, ranks and formats.
-## The two controls are the number of top alerts and the population group(s).
+## table and shows the top-N alert definitions per population group as (a) a
+## grouped table and (b) a Figure-2-style dimension panel restricted to the
+## selected alerts. No utility calculations run in the app - it only filters,
+## ranks and formats.
+##
+## A country selector switches between the pooled (all-country) table
+## (data/complete_utility_data_mean_sd.csv) and country-specific estimates
+## (data/country_utility_*.csv). Selecting a country also filters the
+## dimension figure's boxplots to that country's own distributions
+## (data/compare_significant_*.parquet), so the table, ranking and figure are
+## all consistently country-specific together.
+##
+## The country tables don't carry the pooled table's SD/N companion columns
+## (sd_impact, sd_eff, sd_delay, n_alerts, n_outbreaks) - the table formatter
+## shows those in parentheses only when present, and just the mean otherwise.
 ## ---------------------------------------------------------------------------
 
 ## Single source of truth for the five utility-dimension descriptions, used
@@ -32,11 +42,14 @@ dimension_tooltip_html <- function(display_text, description) {
   )
 }
 
+## sentinel value for the country dropdown's "no specific country" option
+POOLED_SENTINEL <- "__all__"
+
 view1_ui <- function(id) {
   ns <- shiny::NS(id)
-  
+
   shiny::tagList(
-    
+
     ## -------------------- DESCRIPTION BANNER (togglable) --------------------
     shiny::checkboxInput(ns("show_banner"), "Show description", value = TRUE),
     shiny::conditionalPanel(
@@ -53,26 +66,30 @@ view1_ui <- function(id) {
         ",
         "Compare top-performing alert definitions and examine what happens in the 1-year period after a cholera surveillance alert is triggered across five dimensions of utility:",
         shiny::tags$br(), shiny::tags$br(),
-        
+
         shiny::tags$b("Potential impact: "), DIMENSION_DESCRIPTIONS[["Impact"]],
         shiny::tags$br(), shiny::tags$br(),
-        
+
         shiny::tags$b("Potential efficiency: "), DIMENSION_DESCRIPTIONS[["Efficiency"]],
         shiny::tags$br(), shiny::tags$br(),
-        
+
         shiny::tags$b("Positive predictive value: "), DIMENSION_DESCRIPTIONS[["PPV"]],
         shiny::tags$br(), shiny::tags$br(),
-        
+
         shiny::tags$b("Missed outbreaks: "), DIMENSION_DESCRIPTIONS[["Missed"]],
         shiny::tags$br(), shiny::tags$br(),
-        
+
         shiny::tags$b("Timeliness: "), DIMENSION_DESCRIPTIONS[["Timeliness"]]
       )
     ),
-    
+
     shiny::sidebarLayout(
       shiny::sidebarPanel(
         width = 3,
+        shiny::selectInput(
+          ns("country"), "Country",
+          choices = c("All countries (pooled)" = POOLED_SENTINEL)
+        ),
         shiny::checkboxGroupInput(
           ns("pop_keep"), "Population group",
           choices = c(
@@ -89,6 +106,7 @@ view1_ui <- function(id) {
         ),
         shiny::tags$hr(),
         shiny::uiOutput(ns("param_note")),
+        shiny::uiOutput(ns("country_note")),
         shiny::helpText(
           "The utility score is the sum of the standardised dimensions: ",
           "impact, efficiency, PPV, missed outbreaks, and timeliness.",
@@ -112,7 +130,47 @@ view1_ui <- function(id) {
 
 view1_server <- function(id, data) {
   shiny::moduleServer(id, function(input, output, session) {
-    
+
+    ## populate the country dropdown once, from countries that have at
+    ## least one eligible alert definition in at least one population group
+    ## (the same eligibility rule the table itself applies) - a country with
+    ## no usable data anywhere is not offered as an option at all. Degrades
+    ## to "pooled only" if data$country_tbl is unavailable (e.g. the CSVs
+    ## are missing). Sorted by full country name, not ISO3 code.
+    country_completeness <- shiny::reactive({
+      if (is.null(data$country_tbl)) return(NULL)
+      compute_country_completeness(data$country_tbl)
+    })
+
+    shiny::observe({
+      comp <- country_completeness()
+      if (is.null(comp)) return(NULL)
+      country_codes <- unique(comp$country)
+      country_labels <- country_display_name(country_codes)
+      ord <- order(country_labels)
+      shiny::updateSelectInput(
+        session, "country",
+        choices = c(
+          "All countries (pooled)" = POOLED_SENTINEL,
+          stats::setNames(country_codes[ord], country_labels[ord])
+        )
+      )
+    })
+
+    ## the table to rank/filter: the pooled table, or the country table
+    ## filtered to the selected country
+    active_tbl <- shiny::reactive({
+      if (is.null(input$country) || input$country == POOLED_SENTINEL || is.null(data$country_tbl)) {
+        data$view1_tbl
+      } else {
+        dplyr::filter(data$country_tbl, country == input$country)
+      }
+    })
+
+    is_country_selected <- shiny::reactive({
+      !is.null(input$country) && input$country != POOLED_SENTINEL && !is.null(data$country_tbl)
+    })
+
     output$param_note <- shiny::renderUI({
       tbl <- data$view1_tbl
       if (is.null(tbl)) return(NULL)
@@ -126,26 +184,57 @@ view1_server <- function(id, data) {
         if (!is.null(it)) paste0("impact/outbreak threshold = ", it, " cases.") else NULL
       )
     })
-    
+
+    output$country_note <- shiny::renderUI({
+      shiny::req(is_country_selected())
+      country_name <- country_display_name(input$country)
+
+      comp <- country_completeness()
+      covered <- if (is.null(comp)) character(0) else comp$pop_brk[comp$country == input$country]
+      missing_groups <- setdiff(c("<50k", "50k-500k", ">500k"), covered)
+
+      shiny::tagList(
+        shiny::helpText(
+          "Showing estimates for ", shiny::tags$b(country_name), " only. ",
+          "The table, ranking and dimension figure below are all specific to ",
+          country_name, "."
+        ),
+        if (length(missing_groups) > 0) {
+          shiny::helpText(
+            shiny::tags$b("Data sparsity: "),
+            country_name, " has no eligible alert definitions in the ",
+            paste(vapply(missing_groups, pop_group_long_label, character(1)), collapse = "; "),
+            if (length(missing_groups) > 1) " population groups." else " population group.",
+            " Only ", 3 - length(missing_groups), " of 3 population groups are shown."
+          )
+        } else {
+          NULL
+        }
+      )
+    })
+
     selected_rows <- shiny::reactive({
       shiny::validate(shiny::need(
-        !is.null(data$view1_tbl),
+        !is.null(active_tbl()),
         "Precomputed utility table not found (data/complete_utility_data_mean_sd.csv)."
       ))
       shiny::validate(shiny::need(length(input$pop_keep) > 0, "Select at least one population group."))
-      select_top_definitions(data$view1_tbl, pop_keep = input$pop_keep, n_top = input$n_top)
+      select_top_definitions(active_tbl(), pop_keep = input$pop_keep, n_top = input$n_top)
     })
-    
+
     table_parts <- shiny::reactive({
-      build_top_alerts_table(data$view1_tbl, pop_keep = input$pop_keep, n_top = input$n_top)
+      build_top_alerts_table(active_tbl(), pop_keep = input$pop_keep, n_top = input$n_top)
     })
-    
+
     output$top_table <- shiny::renderUI({
       parts <- table_parts()
-      shiny::validate(shiny::need(nrow(parts$display) > 0, "No alerts to display for this selection."))
-      
+      shiny::validate(shiny::need(
+        nrow(parts$display) > 0,
+        "No alerts to display for this selection (this country/population group combination may have too little data)."
+      ))
+
       tab_body <- dplyr::select(parts$display, -pop_brk)
-      
+
       ## header text for the five utility-dimension columns gets a hover
       ## tooltip (the same description shown in the banner above); the
       ## other columns (Alert Definition, Alert Type, Utility Score) are
@@ -159,16 +248,18 @@ view1_server <- function(id, data) {
         startsWith(plain_names, "Timeliness") ~ dimension_tooltip_html(plain_names, DIMENSION_DESCRIPTIONS[["Timeliness"]]),
         TRUE ~ plain_names
       )
-      
+
+      caption_scope <- if (is_country_selected()) paste0(" \u2014 ", country_display_name(input$country)) else ""
+
       kbl <- tab_body %>%
         kableExtra::kbl(
           format = "html",
           caption = if (identical(input$n_top, "all")) {
-            "All eligible alert definitions by utility score per population group"
+            paste0("All eligible alert definitions by utility score per population group", caption_scope)
           } else {
             paste0(
               "Top ", input$n_top,
-              " eligible alert definitions by utility score per population group"
+              " eligible alert definitions by utility score per population group", caption_scope
             )
           },
           align = c("l", "l", "r", "r", "r", "r", "r", "r"),
@@ -179,34 +270,44 @@ view1_server <- function(id, data) {
           bootstrap_options = c("striped", "hover", "condensed"),
           full_width = TRUE, position = "center"
         )
-      
+
+      n_locations_for <- function(pg) {
+        lp <- data$location_pop_brk
+        if (is.null(lp)) return(NA_integer_)
+        if (is_country_selected()) lp <- dplyr::filter(lp, country == input$country)
+        sum(lp$pop_brk == pg)
+      }
+
       start <- 1
       for (i in seq_along(parts$group_counts)) {
         n_i <- parts$group_counts[i]
         kbl <- kableExtra::group_rows(
           kbl,
-          group_label = pop_group_long_label(parts$pop_keep[i]),
+          group_label = pop_group_long_label(
+            parts$pop_keep[i],
+            n_locations = n_locations_for(parts$pop_keep[i])
+          ),
           start_row = start,
           end_row = start + n_i - 1
         )
         start <- start + n_i
       }
-      
+
       kbl <- kableExtra::row_spec(kbl, parts$top_row_index, bold = FALSE, background = "white")
       shiny::HTML(kbl)
     })
-    
+
     fig_height <- shiny::reactive({
       sr <- selected_rows()
       n_rows <- nrow(sr)
       n_grp  <- dplyr::n_distinct(sr$pop_brk)
       paste0(max(320, 140 + n_grp * 30 + n_rows * 26), "px")
     })
-    
+
     output$dimension_plot_container <- shiny::renderUI({
       shiny::plotOutput(session$ns("dimension_figure"), height = fig_height())
     })
-    
+
     output$dimension_figure <- shiny::renderPlot({
       sr <- selected_rows()
       shiny::validate(shiny::need(nrow(sr) > 0, "No alerts to plot for this selection."))
@@ -215,7 +316,15 @@ view1_server <- function(id, data) {
         paste0("Distribution files not found. Add the ",
                "compare_significant_*_testmeans_epidemic.parquet exports to data/.")
       ))
-      make_dimensions_figure(sr, data$view1_tbl, data$dist_tbl)
+      fig <- make_dimensions_figure(
+        sr, active_tbl(), data$dist_tbl,
+        country = if (is_country_selected()) input$country else NULL
+      )
+      shiny::validate(shiny::need(
+        !is.null(fig),
+        "No distribution data available for this selection."
+      ))
+      fig
     })
   })
 }
