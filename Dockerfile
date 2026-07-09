@@ -3,8 +3,8 @@
 #
 # Single-stage image: R + system libraries, then the app's R packages, then
 # the app code itself. Built fresh per app rather than layered on a shared
-# base image, since packages are installed as precompiled binaries and future
-# apps are expected sporadically rather than sharing a common base.
+# base image, since future apps are expected sporadically rather than
+# sharing a common base.
 #
 # Build:
 #   docker build -t alerts-app:1.0 -t alerts-app:latest .
@@ -18,7 +18,10 @@ FROM rocker/r-ver:4.3.3
 
 # --- System libraries required by the app's R packages --------------------
 # xml2 (kableExtra) -> libxml2-dev; curl/ssl -> web + package installs;
-# the font/graphics libs are needed to render ggplot2 / patchwork plots.
+# the font/graphics libs are needed to render ggplot2 / patchwork plots;
+# libuv1-dev -> fs (a shiny/httpuv dependency), needed since packages
+# currently compile from source rather than installing as binaries (see
+# note below).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       pandoc \
       libcurl4-openssl-dev \
@@ -32,6 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libtiff5-dev \
       libjpeg-dev \
       libcairo2-dev \
+      libuv1-dev \
       locales \
  && rm -rf /var/lib/apt/lists/*
 
@@ -43,16 +47,20 @@ ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
 # --- Reproducible package versions ----------------------------------------
 # Freeze on a dated Posit Public Package Manager snapshot so rebuilds get the
-# same versions. The __linux__/jammy path serves precompiled binaries (fast).
-# Bump the date to re-pin against a newer snapshot; keep "jammy" in sync with
-# the base image's Ubuntu codename.
+# same versions, regardless of when the image is rebuilt. Note: this endpoint
+# currently serves source packages rather than precompiled binaries (verified
+# on both amd64 and arm64), so builds compile everything from source and take
+# a while. Bump the date to re-pin against a newer snapshot; keep "jammy" in
+# sync with the base image's Ubuntu codename.
 RUN echo 'options(repos = c(CRAN = "https://packagemanager.posit.co/cran/__linux__/jammy/2026-07-08"))' \
       >> /usr/local/lib/R/etc/Rprofile.site
 
 # --- App's R packages --------------------------------------------------
-## `arrow` (for Parquet I/O) installs from Posit Package Manager's precompiled
-## Ubuntu jammy binaries via the repo option above, so it does not need to
-## compile Arrow C++ from source or any extra apt-level libarrow packages.
+## `arrow` (for Parquet I/O) fetches a prebuilt Arrow C++ binary internally
+## during its own configure step; if that lookup ever fails for the build
+## architecture it falls back to a full source build of Arrow C++, which
+## additionally needs cmake >= 3.26 (not installed here, since the fallback
+## hasn't been hit in practice).
 RUN R -q -e "install.packages(c('shiny','dplyr','tidyr','ggplot2','arrow','kableExtra','patchwork'))"
 
 # --- App code + data -------------------------------------------------------
