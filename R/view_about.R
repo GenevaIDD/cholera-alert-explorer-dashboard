@@ -37,7 +37,7 @@ view_about_ui <- function(id) {
           
           shiny::p("A preprint about this work is coming soon."),
           
-          shiny::p("Last updated: 8 July 2026"),
+          shiny::p("Last updated: 9 July 2026"),
           
           shiny::br()
         )
