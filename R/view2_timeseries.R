@@ -120,6 +120,26 @@ alert_window_plot <- function(time_data, group_data, instances, extra_numbers = 
       alert_lab = factor(alert_definition_label(alert_number), levels = highlight_labels)
     )
 
+  ## geom_vline's legend key glyph renders blank for a highlighted definition
+  ## with zero occurrences across all sampled panels (e.g. by chance of the
+  ## random draw), even with scale_colour_manual(drop = FALSE) - ggplot needs
+  ## at least one data row per level to compute the key glyph, not just a
+  ## factor level. Add an invisible phantom row (week_index = NA, so it draws
+  ## no line - hence the expected "Removed row(s) containing missing values"
+  ## warning) for any highlighted level with no real occurrence, so its
+  ## legend swatch always renders in the correct colour.
+  missing_labels <- setdiff(highlight_labels, unique(as.character(hl$alert_lab)))
+  if (length(missing_labels) > 0) {
+    hl <- dplyr::bind_rows(
+      hl,
+      data.frame(
+        unique_alert_id = factor(panel_levels[1], levels = panel_levels),
+        week_index = NA_real_,
+        alert_lab = factor(missing_labels, levels = highlight_labels)
+      )
+    )
+  }
+
   ## explicit breaks anchored at week 1 (never "week 0"); with facet
   ## scales = "free", each panel automatically shows only the subset of
   ## these breaks that fall inside its own visible range
@@ -237,11 +257,13 @@ view2_ui <- function(id) {
           choices = extra_choices, selected = "none",
           options = list(render = tooltip_render_js)
         ),
+        shiny::uiOutput(ns("extra1_description")),
         shiny::selectizeInput(
           ns("extra2"), "Additional alert definition #2",
           choices = extra_choices, selected = "none",
           options = list(render = tooltip_render_js)
         ),
+        shiny::uiOutput(ns("extra2_description")),
         shiny::tags$hr()
       ),
 
@@ -271,6 +293,18 @@ view2_server <- function(id, data) {
     extra_numbers <- shiny::reactive({
       nums <- suppressWarnings(as.numeric(c(input$extra1, input$extra2)))
       nums[!is.na(nums)]
+    })
+
+    ## full descriptive sentence shown below each dropdown once a definition
+    ## is selected - reuses alert_definition_description() directly, the same
+    ## source used for View 1's table tooltips, so the two never diverge
+    output$extra1_description <- shiny::renderUI({
+      if (is.null(input$extra1) || input$extra1 == "none") return(NULL)
+      shiny::helpText(alert_definition_description(as.numeric(input$extra1)))
+    })
+    output$extra2_description <- shiny::renderUI({
+      if (is.null(input$extra2) || input$extra2 == "none") return(NULL)
+      shiny::helpText(alert_definition_description(as.numeric(input$extra2)))
     })
 
     ## changing the extra selections redraws only the highlight overlay -
