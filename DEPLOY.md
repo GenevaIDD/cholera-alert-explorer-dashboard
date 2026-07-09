@@ -10,6 +10,11 @@ ShinyProxy runs one Docker container per user session; each app is a Docker
 image whose Shiny process listens on **port 3838**. ShinyProxy is told which
 image to run in its `application.yml`.
 
+**This app will be public and won't require login.** ShinyProxy's
+`authentication` setting is instance-wide, so it needs its own dedicated
+ShinyProxy instance. That VM doesn't exist yet as of this writing; section 4
+below is a draft to paste in once it does.
+
 ---
 
 ## 1. Build the image
@@ -55,28 +60,52 @@ docker push registry.example.org/alerts-app:1.0
 
 ## 4. Register the app in `application.yml`
 
-Add a spec under `proxy.specs` (ShinyProxy 3.x syntax):
+**Draft only — this VM doesn't exist yet.** Once the new public ShinyProxy
+instance is provisioned and Runbook 1 (steps 1–7: base packages, Docker,
+`shinyproxy` system user, ShinyProxy jar, systemd service) is done on it,
+paste this into `/etc/shinyproxy/application.yml` on *that* VM:
 
 ```yaml
 proxy:
+  title: <instance title>
+  port: 8080
+  authentication: none        # public instance, no login — instance-wide setting
+
+  heartbeat-rate: 10000
+  heartbeat-timeout: 60000        # stops a container if the browser tab disconnects
+  default-proxy-max-lifetime: 120 # minutes; hard cap even if the tab stays open
+
+  docker:
+    port-range-start: 20000
+
   specs:
     - id: alerts
       display-name: Cholera Alert Explorer
       description: Alert utility scores and an anonymised time-series explorer
-      container-image: alerts-app:latest        # or registry.example.org/alerts-app:1.0
+      container-image: alerts-app:latest        # or <dockerhub-account>/alerts-app:<tag>
       container-cmd: ["R", "-e", "shiny::runApp('/srv/alerts_app', host = '0.0.0.0', port = 3838)"]
       # port: 3838                # default; only needed if you change the port
-      # access-groups: [ researchers ]   # restrict access; omit = all authenticated users
+      # max-lifetime: 60         # per-app override of default-proxy-max-lifetime, if needed
+
+server:
+  servlet:
+    context-path: /shinyproxy
 ```
 
 Notes:
 - `container-cmd` here is optional because the image already sets the same
   `CMD`; include it if you prefer the launch command to live in config.
+- `heartbeat-timeout` only catches a closed/disconnected tab — a tab left
+  open but untouched keeps sending heartbeats, so `default-proxy-max-lifetime`
+  is the real backstop against a container running indefinitely. Since this
+  instance has no login to bound sessions naturally, both matter more here
+  than on an authenticated instance.
 - If ShinyProxy runs containers on a user-defined Docker network, add
   `container-network: "${proxy.docker.container-network}"` to the spec.
-- Restart ShinyProxy after editing `application.yml` (e.g.
-  `sudo systemctl restart shinyproxy`, or rebuild/restart its container; the
-  ShinyProxy Operator picks up changes automatically).
+- Validate the YAML before restarting:
+  `sudo python3 -c "import yaml; yaml.safe_load(open('/etc/shinyproxy/application.yml')); print('YAML OK')"`
+- Restart ShinyProxy after editing `application.yml`:
+  `sudo systemctl restart shinyproxy`
 
 ---
 
@@ -96,6 +125,11 @@ ShinyProxy configuration docs for your version.
   `Dockerfile` (`.../jammy/2026-07-08`). Bump that date deliberately when you
   want to move packages forward, and keep the `jammy` codename in sync with
   the base image's Ubuntu release.
+- This endpoint currently serves source packages rather than precompiled
+  binaries (verified on both amd64 and arm64), so bumping the date means a
+  full from-source recompile on the next build, not a quick binary pull —
+  roughly 5 minutes on amd64 up to 25+ minutes on arm64, since Arrow may or
+  may not find a prebuilt `libarrow` binary for the build architecture.
 - For exact lockfile-level reproducibility instead, commit an `renv.lock` and
   `RUN R -e "renv::restore()"` in place of the `install.packages(...)` lines.
 
