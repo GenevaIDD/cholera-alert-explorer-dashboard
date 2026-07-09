@@ -23,6 +23,8 @@ Debian/Ubuntu). Data files are Parquet, read via `arrow::read_parquet()`.
 
 ## Directory structure
 
+## Directory structure
+
 ```
 alerts_app/
 ├── app.R                       # entry point (UI + server wiring, 4 tabs)
