@@ -156,13 +156,34 @@ view2_ui <- function(id) {
 
   ## dropdown choices for the two "extra" selectors: every definition except
   ## the two fixed anchors, labelled descriptively, keyed by alert_number
+  extra_numbers_all <- setdiff(1:24, ANCHOR_NUMBERS)
   extra_choices <- c(
     "(none)" = "none",
-    stats::setNames(
-      as.character(setdiff(1:24, ANCHOR_NUMBERS)),
-      alert_definition_label(setdiff(1:24, ANCHOR_NUMBERS))
-    )
+    stats::setNames(as.character(extra_numbers_all), alert_definition_label(extra_numbers_all))
   )
+
+  ## full descriptive sentence per dropdown value, for a hover tooltip on
+  ## each option - the same text already used as a tooltip on View 1's
+  ## table (alert_definition_description(), from utility_calc.R)
+  descr_lookup <- c(
+    "none" = "No additional alert definition selected.",
+    stats::setNames(alert_definition_description(extra_numbers_all), as.character(extra_numbers_all))
+  )
+  descr_json <- jsonlite::toJSON(as.list(descr_lookup), auto_unbox = TRUE)
+
+  ## selectize render callback: shows each option's full description as a
+  ## native browser tooltip (title attribute) when hovering over it in the
+  ## open dropdown list, using selectize's own HTML-escaping helper
+  tooltip_render_js <- I(sprintf(
+    "{
+      option: function(item, escape) {
+        var descriptions = %s;
+        var desc = descriptions[item.value] || '';
+        return '<div title=\"' + escape(desc) + '\">' + escape(item.label) + '</div>';
+      }
+    }",
+    descr_json
+  ))
 
   shiny::tagList(
 
@@ -208,10 +229,18 @@ view2_ui <- function(id) {
         shiny::tags$hr(),
         shiny::helpText(
           "Optionally show up to ", MAX_EXTRA,
-          " more definitions in the same panels, wherever they occur inside the fixed window."
+          " more definitions in the same panels, wherever they occur inside the fixed window. Hover over a dropdown option to see its full description."
         ),
-        shiny::selectInput(ns("extra1"), "Additional alert definition #1", choices = extra_choices, selected = "none"),
-        shiny::selectInput(ns("extra2"), "Additional alert definition #2", choices = extra_choices, selected = "none"),
+        shiny::selectizeInput(
+          ns("extra1"), "Additional alert definition #1",
+          choices = extra_choices, selected = "none",
+          options = list(render = tooltip_render_js)
+        ),
+        shiny::selectizeInput(
+          ns("extra2"), "Additional alert definition #2",
+          choices = extra_choices, selected = "none",
+          options = list(render = tooltip_render_js)
+        ),
         shiny::tags$hr()
       ),
 
