@@ -224,7 +224,8 @@ view2_ui <- function(id) {
           ns("resample"),
           "Show another random selection",
           icon = shiny::icon("shuffle"),
-          width = "100%"
+          width = "100%",
+          style = "white-space: normal;"
         ),
         shiny::tags$hr(),
         shiny::helpText(
