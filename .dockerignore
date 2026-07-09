@@ -2,7 +2,6 @@
 .git
 .gitignore
 Dockerfile
-Dockerfile.base
 .dockerignore
 DEPLOY.md
 README.md
